@@ -9,7 +9,6 @@ GA4 BigQuery 원천 데이터를 기반으로 클릭수 / 스크롤 도달률을
 (반드시 detail_page_dashboard 폴더 안에서 실행해야 config.py 상대경로가 맞는다)
 """
 import os
-from datetime import date, timedelta
 
 import pandas as pd
 import streamlit as st
@@ -183,9 +182,21 @@ if page == "데이터 조회":
                     viz.render_click_ranking(result_b["click_df"], result_b["totals"], top_n=5, text_chars=40, key="b")
 
 # ────────────────────────────────────────────────────────────
-# 설정 관리 (관리자)
+# 설정 관리 (관리자) — APP_PASSWORD와 별개로 ADMIN_PASSWORD가 있으면 한 번 더 막는다 (관리자 본인만 진입)
 # ────────────────────────────────────────────────────────────
 else:
+    _admin_pw = auth.admin_password()
+    if _admin_pw and not st.session_state.get("admin_authed"):
+        st.title("🔒 설정 관리 (관리자 전용)")
+        apw = st.text_input("관리자 비밀번호", type="password", key="admin_pw_input")
+        if apw:
+            if apw == _admin_pw:
+                st.session_state["admin_authed"] = True
+                st.rerun()
+            else:
+                st.error("비밀번호가 올바르지 않습니다.")
+        st.stop()
+
     st.title("⚙️ 설정 관리 (관리자)")
     st.caption("부트캠프명/기수/상세페이지 URL slug/조회 기간을 등록하면, '데이터 조회' 화면 목록에 바로 반영됩니다.")
 
@@ -215,44 +226,57 @@ else:
             st.rerun()
 
     st.divider()
-    st.subheader("직접 등록 (수동)")
-    st.caption("자동 동기화 대상이 아닌 과정이거나, slug/기간을 개별적으로 고칠 때 사용하세요.")
-    with st.form("config_form", clear_on_submit=False):
-        c1, c2 = st.columns(2)
-        bootcamp_name = c1.text_input("부트캠프명", placeholder="예: 백엔드 자바")
-        cohort = c2.text_input("기수", placeholder="예: 27기")
-        url_slug = st.text_input(
-            "상세페이지 URL slug",
-            placeholder="예: kdt-backendj-27th",
-            help="상세페이지 URL 중 bootcamp.likelion.net/school/ 뒤에 오는 부분",
-        )
-        c3, c4 = st.columns(2)
-        start_date = c3.date_input("조회 시작일", value=date.today() - timedelta(days=14))
-        end_date = c4.date_input("조회 종료일", value=date.today())
-        created_by = st.text_input("작성자", placeholder="이름 또는 이메일")
-        submitted = st.form_submit_button("등록 / 수정")
-
-    if submitted:
-        if not (bootcamp_name and cohort and url_slug):
-            st.error("부트캠프명 / 기수 / URL slug는 필수입니다.")
-        elif start_date > end_date:
-            st.error("시작일이 종료일보다 늦을 수 없습니다.")
-        else:
-            bq.upsert_config(url_slug.strip(), bootcamp_name.strip(), cohort.strip(), start_date, end_date,
-                              created_by.strip() or "익명")
-            st.success(f"'{bootcamp_name} {cohort}' 등록 완료 (url_slug: {url_slug})")
-
-    st.divider()
-    st.subheader("등록된 목록")
+    st.subheader("등록된 목록 — 표에서 직접 추가 / 수정 / 삭제")
+    st.caption(
+        "셀을 클릭해서 바로 고칠 수 있고, 맨 아래 빈 줄에 입력하면 새로 추가돼요. "
+        "행 맨 왼쪽 체크박스로 선택 후 위쪽 휴지통 아이콘을 누르면 삭제됩니다. "
+        "다 고치신 다음 **아래 '변경사항 저장' 버튼을 눌러야** 실제 반영돼요 (누르기 전까진 화면에서만 수정 중인 상태)."
+    )
     configs = bq.list_configs()
-    if configs.empty:
-        st.caption("등록된 항목이 없습니다.")
-    else:
-        st.dataframe(
-            configs[["url_slug", "bootcamp_name", "cohort", "start_date", "end_date",
-                     "created_by", "updated_at", "screenshot_path"]],
-            use_container_width=True,
-        )
+    editable_cols = ["url_slug", "bootcamp_name", "cohort", "start_date", "end_date"]
+    base_df = configs[editable_cols] if not configs.empty else pd.DataFrame(columns=editable_cols)
+    edited = st.data_editor(
+        base_df,
+        num_rows="dynamic",
+        use_container_width=True,
+        key="configs_editor",
+        column_config={
+            "url_slug": st.column_config.TextColumn("url_slug (고유키)", required=True),
+            "bootcamp_name": st.column_config.TextColumn("부트캠프명", required=True),
+            "cohort": st.column_config.TextColumn("기수", required=True),
+            "start_date": st.column_config.DateColumn("시작일", required=True),
+            "end_date": st.column_config.DateColumn("종료일", required=True),
+        },
+    )
+
+    if st.button("변경사항 저장", type="primary"):
+        original_slugs = set(configs["url_slug"]) if not configs.empty else set()
+        valid = edited.dropna(subset=editable_cols).copy()
+        valid = valid[valid["url_slug"].astype(str).str.strip() != ""]
+        new_slugs = set(valid["url_slug"].astype(str).str.strip())
+
+        to_delete = original_slugs - new_slugs
+        for slug in to_delete:
+            bq.delete_config(slug)
+
+        bad_rows = len(edited) - len(valid)
+        for _, r in valid.iterrows():
+            bq.upsert_config(
+                str(r["url_slug"]).strip(), str(r["bootcamp_name"]).strip(), str(r["cohort"]).strip(),
+                r["start_date"], r["end_date"], created_by="관리자 수정",
+            )
+        msg = f"저장 완료 — 등록/수정 {len(valid)}건, 삭제 {len(to_delete)}건"
+        if bad_rows:
+            msg += f" (필수값이 빈 {bad_rows}개 행은 저장하지 않고 건너뜀)"
+        st.success(msg)
+        st.rerun()
+
+    if not configs.empty:
+        with st.expander("스크린샷/작성자 등 부가 정보 보기"):
+            st.dataframe(
+                configs[["url_slug", "created_by", "updated_at", "screenshot_path"]],
+                use_container_width=True, hide_index=True,
+            )
 
         st.divider()
         st.subheader("상세페이지 캡처 이미지 등록 (스크롤 히트맵용, 선택)")
@@ -283,10 +307,3 @@ else:
             new_list = [line for line in exclusions_text.split("\n")]
             bq.set_click_exclusions(new_list)
             st.success(f"{len([l for l in new_list if l.strip()])}개 문구 저장 완료")
-
-        st.divider()
-        del_slug = st.selectbox("삭제할 url_slug 선택", [""] + configs["url_slug"].tolist())
-        if del_slug and st.button(f"'{del_slug}' 삭제", type="secondary"):
-            bq.delete_config(del_slug)
-            st.success(f"'{del_slug}' 삭제 완료")
-            st.rerun()

@@ -23,8 +23,17 @@ def get_credentials(scopes=None):
 
 
 def app_password() -> str:
-    """배포 시 secrets에 설정한 접속 비밀번호. 로컬 개발(secrets 없음)에서는 None."""
+    """배포 시 secrets에 설정한 접속 비밀번호(팀 공용). 로컬 개발(secrets 없음)에서는 None."""
     try:
         return st.secrets.get("APP_PASSWORD")
+    except Exception:
+        return None
+
+
+def admin_password() -> str:
+    """'설정 관리' 화면 전용 비밀번호 — APP_PASSWORD와 별개로, 관리자 본인만 아는 값.
+    secrets에 ADMIN_PASSWORD가 없으면(로컬 개발 등) 관리자 화면도 그냥 열어준다."""
+    try:
+        return st.secrets.get("ADMIN_PASSWORD")
     except Exception:
         return None
