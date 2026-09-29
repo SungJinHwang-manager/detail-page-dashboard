@@ -107,9 +107,14 @@ def render_scroll_funnel_compare(df_a: pd.DataFrame, label_a: str, df_b: pd.Data
     st.plotly_chart(fig, use_container_width=True)
 
 
-def render_click_ranking(click_df: pd.DataFrame, totals: dict, top_n: int = 10, text_chars: int = 70,
-                          key: str = None):
+def render_click_ranking(click_df: pd.DataFrame, totals: dict, top_n: int = 20, chart_limit: int = 20,
+                          card_limit: int = 10, text_chars: int = 70, key: str = None):
     """뷰저블 'Tap Count Rank' 스타일 — 어떤 텍스트인지 바로 보이는 랭킹 차트 + 표 + 큰 텍스트 카드
+
+    top_n만큼 데이터를 가져오되, 가독성을 위해 세 단계로 다르게 잘라서 보여준다:
+    - 차트(chart_limit): 막대가 너무 많아지면 한눈에 비교하기 어려워져서 상위 20개로 제한
+    - 표(top_n 그대로): 표는 스크롤/스캔에 강해서 많아도(최대 50개) 가독성 문제가 적어 전체를 보여줌
+    - 큰 글씨 카드(card_limit): "진짜 중요한 것만 크게" 보는 용도라 상위 10개로 제한
     key: 같은 화면에 두 번(A/B 비교) 그릴 때 차트/표 ID가 겹치지 않도록 구분자로 넘긴다."""
     st.subheader("클릭 랭킹 (콘텐츠 요소별)")
     st.caption("뷰저블 클릭 히트맵의 임시 대체 데이터 — click_activity 이벤트의 클릭된 요소 텍스트 기준")
@@ -153,25 +158,29 @@ def render_click_ranking(click_df: pd.DataFrame, totals: dict, top_n: int = 10, 
 
     top["chart_label"] = top.apply(lambda r: f"{int(r['rank'])}위 · {_short(r['user_click'])}", axis=1)
 
+    chart_df = top.head(chart_limit)
     fig = px.bar(
-        top.sort_values("rank", ascending=False), x="clicks", y="chart_label", orientation="h", text="clicks"
+        chart_df.sort_values("rank", ascending=False), x="clicks", y="chart_label", orientation="h", text="clicks"
     )
     fig.update_traces(marker_color="#e8384f", textposition="outside")
     fig.update_yaxes(automargin=True)
     fig.update_layout(
         yaxis_title=None, xaxis_title="클릭 수", showlegend=False,
-        height=max(320, 42 * len(top)), margin=dict(r=40, t=10, b=0),
+        height=max(320, 42 * len(chart_df)), margin=dict(r=40, t=10, b=0),
     )
     st.plotly_chart(fig, use_container_width=True, key=f"click_rank_chart_{key}")
+    if len(top) > chart_limit:
+        st.caption(f"차트는 상위 {chart_limit}개까지만 표시해요. 전체 {len(top)}개는 아래 표에서 확인하세요.")
 
-    # 차트 바로 아래에 원본 텍스트 전체를 보여주는 표를 먼저 배치 (카드보다 앞)
+    # 차트 바로 아래에 원본 텍스트 전체를 보여주는 표를 먼저 배치 (카드보다 앞) — 표는 top_n 전체를 보여줌
     table = top[["rank", "user_click", "clicks", "전체 클릭 비중(%)", "unique_clickers"]].rename(
         columns={"rank": "순위", "user_click": "클릭된 텍스트(원본)", "clicks": "클릭수", "unique_clickers": "클릭 유저수"}
     )
     st.dataframe(table, use_container_width=True, hide_index=True, key=f"click_rank_table_{key}")
 
-    with st.expander("순위별 큰 글씨로 보기", key=f"click_rank_expander_{key}"):
-        for _, r in top.iterrows():
+    card_label = f"순위별 큰 글씨로 보기 (상위 {min(card_limit, len(top))}개)"
+    with st.expander(card_label, key=f"click_rank_expander_{key}"):
+        for _, r in top.head(card_limit).iterrows():
             text = r["user_click"] or ""
             display_text = text if len(text) <= text_chars else text[:text_chars] + "…"
             row_key = f"{key}_{int(r['rank'])}"

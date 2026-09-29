@@ -134,10 +134,14 @@ if page == "데이터 조회":
 
     if mode == "단일 조회":
         cond = _pick_condition(configs, "확인할 부트캠프/기수를 선택하세요", "single")
+        top_n = st.selectbox(
+            "클릭 랭킹 — 몇 개까지 볼까요?", [10, 20, 30, 50], index=1,
+            help="차트는 가독성을 위해 상위 20개까지만 보여지고, 표는 여기서 고른 개수만큼 전부 보여줍니다.",
+        )
         if st.button("조회하기", type="primary"):
-            result = _run_query_set(cond, top_n=10)
+            result = _run_query_set(cond, top_n=top_n)
             if result:
-                _render_full(cond, result, top_n=10)
+                _render_full(cond, result, top_n=top_n)
 
     else:
         st.caption("예: 이전 기수를 A, 현재 진행 중인 기수를 B로 놓고 비교해보세요.")
