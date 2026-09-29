@@ -150,10 +150,21 @@ def get_scroll_funnel(start_date, end_date, url_slug):
     return client.query(query, job_config=job_config).to_dataframe()
 
 
+# 2026-09-16부터 GTM에 'click_activity_modulor' 태그(+'click event' 파라미터)가 새로 추가되어
+# 기존 'click_activity'(+'user_click')와 같은 트리거에서 병행 발생 중이다. 모듈로(Shadow DOM) 페이지의
+# 클릭 유실 문제 대응으로 추가된 것인데, 실측 결과(2026-09-16~09-29) 모듈로 페이지뿐 아니라 일반
+# 페이지에서도 빈값 비율이 기존과 같거나 더 낮아(예: kdt-cld-9th 83.5%→35.5%, kdt-growth-6th
+# 16.0%→12.2%) 이 날짜부터는 무조건 새 이벤트만 쓰는 게 이득이다. 둘 다 같은 클릭에서 병행 발생하므로
+# 단순 UNION/COALESCE하면 클릭이 2배로 중복 집계된다 — 그래서 날짜로 배타적으로 나눠서 딱 하나만 쓴다.
+CLICK_EVENT_CUTOVER = "20260916"
+
+
 def _clicks_cte(path_expr: str, excluded: list) -> str:
     """
-    click_activity 원시 클릭을 TRIM + 중복제거해서 뽑는 공통 CTE 문자열.
+    click_activity(구) / click_activity_modulor(신) 원시 클릭을 TRIM + 중복제거해서 뽑는 공통 CTE.
 
+    - 이벤트 선택: CLICK_EVENT_CUTOVER 이전 날짜는 click_activity(+user_click), 이후는
+      click_activity_modulor(+click event)만 사용 (위 주석 참고, 병행 발생으로 인한 중복 집계 방지)
     - 중복제거(SELECT DISTINCT ... event_timestamp 포함): 실제 데이터 확인 결과, 사이트 트래킹 자체가
       동일 유저의 같은 클릭을 event_timestamp까지 완전히 동일하게 2~7회 중복 발생시키는 경우가 많았음
       (2026-09-10, kdt-backendj-27th 기준 전체 click_activity의 42%가 정확히 동일 (유저,timestamp) 중복 —
@@ -167,10 +178,16 @@ def _clicks_cte(path_expr: str, excluded: list) -> str:
             SELECT DISTINCT
                 user_pseudo_id,
                 event_timestamp,
-                TRIM((SELECT ep.value.string_value FROM UNNEST(event_params) ep WHERE ep.key = 'user_click')) AS user_click_raw
+                TRIM(COALESCE(
+                    (SELECT ep.value.string_value FROM UNNEST(event_params) ep WHERE ep.key = 'user_click'),
+                    (SELECT ep5.value.string_value FROM UNNEST(event_params) ep5 WHERE ep5.key = 'click event')
+                )) AS user_click_raw
             FROM {cfg.EVENTS_TABLE}
             WHERE _TABLE_SUFFIX BETWEEN @start_suffix AND @end_suffix
-              AND event_name = 'click_activity'
+              AND (
+                (event_name = 'click_activity' AND _TABLE_SUFFIX < '{CLICK_EVENT_CUTOVER}')
+                OR (event_name = 'click_activity_modulor' AND _TABLE_SUFFIX >= '{CLICK_EVENT_CUTOVER}')
+              )
               AND {_page_match_sql(path_expr)}
         ), clicks_filtered AS (
             SELECT user_pseudo_id, user_click_raw AS user_click

@@ -11,6 +11,7 @@ import streamlit.components.v1 as components
 from PIL import Image
 
 import bq
+import queries
 
 SCROLL_LINE_COLORS = ["#e8384f", "#f59e0b", "#3b82f6", "#10b981", "#8b5cf6", "#ec4899"]
 
@@ -117,8 +118,14 @@ def render_click_ranking(click_df: pd.DataFrame, totals: dict, top_n: int = 10, 
         excluded_list = bq.get_click_exclusions()
         excluded_preview = ", ".join(excluded_list[:8]) + ("..." if len(excluded_list) > 8 else "")
         st.markdown(
-            "- **이벤트**: GA4 커스텀 이벤트 `click_activity`의 `user_click` 파라미터(클릭된 요소의 텍스트) 기준 — "
+            "- **이벤트**: GA4 커스텀 이벤트 `click_activity`(2026-09-16 이전)의 `user_click` 파라미터, "
+            f"{queries.CLICK_EVENT_CUTOVER[:4]}-{queries.CLICK_EVENT_CUTOVER[4:6]}-{queries.CLICK_EVENT_CUTOVER[6:]} "
+            "이후는 `click_activity_modulor`의 `click event` 파라미터를 사용 — 클릭된 요소의 텍스트 기준. "
             "뷰저블처럼 좌표 기반 히트맵이 아니라 텍스트 단위 집계라 **같은 텍스트를 쓰는 서로 다른 요소는 하나로 합쳐짐**\n"
+            "- **왜 2026-09-16을 기점으로 나누나**: 모듈로(Shadow DOM)로 만든 페이지에서 클릭 텍스트가 대부분 "
+            "유실되는 문제가 있었는데(2026-09-10 확인, 최대 87.9% 빈값), 이후 개발팀이 `click_activity_modulor`라는 "
+            "새 이벤트로 이를 개선함(빈값 비율 87.9%→35.5%, 2026-09-29 재확인). 두 이벤트가 같은 클릭에서 "
+            "병행 발생하고 있어서, 단순히 합치면 클릭이 2배로 중복 집계됨 — 그래서 날짜로 딱 나눠서 한쪽만 쓴다\n"
             "- **정규화**: 줄바꿈만 다른 값(`지원하기` vs `지원하기\\n`)은 TRIM 후 합산\n"
             f"- **중복 제거**: 같은 유저 + 같은 `event_timestamp`로 완전히 동일하게 찍힌 이벤트는 1건으로 처리 "
             "(2026-09-10 확인 결과, 사이트 트래킹 자체가 동일 클릭을 최대 7회까지 중복 발생시키는 경우가 있어 반드시 필요했음)\n"
