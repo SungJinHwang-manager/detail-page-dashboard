@@ -1,5 +1,5 @@
 """
-상세페이지 임시 분석 대시보드 (뷰저블 대체용)
+에듀그로스스쿼드 상세페이지 분석기 (뷰저블 대체용, 관리자: 황성진)
 
 담당자가 기간/부트캠프명/기수를 사전 등록해두면, 확인하고 싶은 사람이 목록에서 선택해
 GA4 BigQuery 원천 데이터를 기반으로 클릭수 / 스크롤 도달률을 바로 시각화해서 볼 수 있다.
@@ -20,7 +20,9 @@ import queries
 import sheet_sync
 import viz
 
-st.set_page_config(page_title="상세페이지 분석 대시보드 (임시)", layout="wide")
+APP_NAME = "에듀그로스스쿼드 상세페이지 분석기"
+
+st.set_page_config(page_title=APP_NAME, layout="wide")
 
 # 탭(스크롤/클릭) 버튼을 크고 뚜렷하게. Streamlit 1.63 프론트엔드 번들에서 실제 쓰는 속성인
 # data-testid="stTab"/aria-selected 기준으로 만듦 (예전 버전 예시에 흔한 data-baseweb="tab"은
@@ -54,7 +56,7 @@ div[data-testid="stTabs"] [data-testid="stTab"][aria-selected="true"] p {
 _required_pw = auth.app_password()
 if _required_pw:
     if not st.session_state.get("authed"):
-        st.title("🔒 상세페이지 분석 대시보드")
+        st.title(f"🔒 {APP_NAME}")
         pw = st.text_input("접속 비밀번호", type="password")
         if pw:
             if pw == _required_pw:
@@ -72,8 +74,8 @@ if "config_table_ready" not in st.session_state:
     bq.ensure_click_exclusions_table()
     st.session_state["config_table_ready"] = True
 
-st.sidebar.title("상세페이지 분석 (임시)")
-st.sidebar.caption("뷰저블 트래킹 복구 전까지 GA4 BigQuery 기반으로 임시 운영")
+st.sidebar.title(APP_NAME)
+st.sidebar.caption("뷰저블 트래킹 복구 전까지 GA4 BigQuery 기반으로 운영 · 관리자: 황성진")
 page = st.sidebar.radio("메뉴", ["데이터 조회", "설정 관리 (관리자)"])
 
 
@@ -179,7 +181,7 @@ def _render_full(cond, result, top_n=10, key="single", channel=None):
 # 데이터 조회
 # ────────────────────────────────────────────────────────────
 if page == "데이터 조회":
-    st.title("📊 상세페이지 분석 대시보드")
+    st.title(f"📊 {APP_NAME}")
 
     configs = bq.list_configs()
     if configs.empty:
@@ -203,25 +205,37 @@ if page == "데이터 조회":
     else:
         st.caption(
             "예: 이전 기수를 A, 현재 진행 중인 기수를 B로 놓고 비교해보세요. "
-            "같은 과정을 고르고 '조건 직접 수정'에서 기간만 다르게 둬도 됩니다."
+            "같은 과정을 고르고 '조건 직접 수정'에서 기간만 다르게 두거나, 유입경로만 다르게 둬도 됩니다."
         )
         col_a, col_b = st.columns(2)
         with col_a:
             st.markdown("#### 기준 A")
             cond_a = _pick_condition(configs, "A", "a")
+            channel_a = _channel_picker(cond_a, "cmp_a")
         with col_b:
             st.markdown("#### 비교 B")
             cond_b = _pick_condition(configs, "B", "b")
+            channel_b = _channel_picker(cond_b, "cmp_b")
+
+        top_n = st.selectbox(
+            "클릭 랭킹 — 몇 개까지 볼까요?", [10, 20, 30, 50], index=0,
+            help="차트는 가독성을 위해 상위 15개까지만 보여지고, 표는 여기서 고른 개수만큼 전부 보여줍니다.",
+            key="cmp_top_n",
+        )
 
         if st.button("비교하기", type="primary"):
-            result_a = _run_query_set(cond_a, top_n=5)
-            result_b = _run_query_set(cond_b, top_n=5)
+            result_a = _run_query_set(cond_a, top_n=top_n, channel=channel_a)
+            result_b = _run_query_set(cond_b, top_n=top_n, channel=channel_b)
 
             # 같은 과정을 기간만 다르게 비교하면 title(부트캠프명+기수)이 서로 같아져서
-            # 그래프 범례/그룹이 하나로 합쳐져 버리는 문제가 있었음 — 기간을 라벨에 항상 같이 붙여서
-            # A/B가 항상 서로 다른 값으로 구분되게 한다.
+            # 그래프 범례/그룹이 하나로 합쳐져 버리는 문제가 있었음 — 기간(+유입경로)을 라벨에
+            # 항상 같이 붙여서 A/B가 항상 서로 다른 값으로 구분되게 한다.
             label_a = f"{cond_a['title']} ({cond_a['start_date']}~{cond_a['end_date']})"
             label_b = f"{cond_b['title']} ({cond_b['start_date']}~{cond_b['end_date']})"
+            if channel_a:
+                label_a += f" · {channel_a}"
+            if channel_b:
+                label_b += f" · {channel_b}"
 
             col_a2, col_b2 = st.columns(2)
             if result_a:
@@ -243,10 +257,12 @@ if page == "데이터 조회":
             col_a3, col_b3 = st.columns(2)
             if result_a:
                 with col_a3:
-                    viz.render_click_ranking(result_a["click_df"], result_a["totals"], top_n=5, text_chars=40, key="a")
+                    viz.render_click_ranking(result_a["click_df"], result_a["totals"], top_n=top_n,
+                                              chart_limit=15, card_limit=5, text_chars=40, key="a")
             if result_b:
                 with col_b3:
-                    viz.render_click_ranking(result_b["click_df"], result_b["totals"], top_n=5, text_chars=40, key="b")
+                    viz.render_click_ranking(result_b["click_df"], result_b["totals"], top_n=top_n,
+                                              chart_limit=15, card_limit=5, text_chars=40, key="b")
 
 # ────────────────────────────────────────────────────────────
 # 설정 관리 (관리자) — APP_PASSWORD와 별개로 ADMIN_PASSWORD가 있으면 한 번 더 막는다 (관리자 본인만 진입)
