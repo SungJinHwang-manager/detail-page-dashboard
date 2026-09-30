@@ -22,6 +22,33 @@ import viz
 
 st.set_page_config(page_title="상세페이지 분석 대시보드 (임시)", layout="wide")
 
+# 탭(스크롤/클릭) 버튼을 크고 뚜렷하게. Streamlit 1.63 프론트엔드 번들에서 실제 쓰는 속성인
+# data-testid="stTab"/aria-selected 기준으로 만듦 (예전 버전 예시에 흔한 data-baseweb="tab"은
+# 이 버전엔 없어서 안 먹힘 — playwright로 렌더링 확인 후 반영).
+st.markdown("""
+<style>
+div[data-testid="stTabs"] div[data-baseweb="tab-list"] {
+    gap: 10px;
+}
+div[data-testid="stTabs"] [data-testid="stTab"] {
+    height: auto;
+    padding: 14px 32px;
+    border-radius: 10px 10px 0 0;
+    background-color: rgba(120, 120, 120, 0.08);
+}
+div[data-testid="stTabs"] [data-testid="stTab"] p {
+    font-size: 20px;
+    font-weight: 700;
+}
+div[data-testid="stTabs"] [data-testid="stTab"][aria-selected="true"] {
+    background-color: #e8384f;
+}
+div[data-testid="stTabs"] [data-testid="stTab"][aria-selected="true"] p {
+    color: #ffffff;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # 배포(Streamlit Cloud) 시 secrets에 APP_PASSWORD를 설정해두면 여기서 막는다.
 # 로컬 개발 환경(secrets 없음)에서는 auth.app_password()가 None이라 그냥 통과한다.
 _required_pw = auth.app_password()
