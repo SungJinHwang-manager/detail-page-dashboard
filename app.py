@@ -82,22 +82,25 @@ def _pick_condition(configs, label, key_prefix):
     }
 
 
-def _run_query_set(cond, top_n=10):
-    """조건(cond)으로 BQ 조회 실행. 방문자 0명이거나 에러면 None 반환하고 화면에 안내만 띄운다."""
+def _run_query_set(cond, top_n=10, channel=None):
+    """조건(cond)으로 BQ 조회 실행. 방문자 0명이거나 에러면 None 반환하고 화면에 안내만 띄운다.
+    channel: 지정 시 그 유입경로(first-touch utm_source)로 방문한 유저만으로 한정."""
     try:
         excluded = bq.get_click_exclusions()
         with st.spinner(f"[{cond['title']}] BigQuery 조회 중..."):
-            overview = queries.get_overview(cond["start_date"], cond["end_date"], cond["slug"])
+            overview = queries.get_overview(cond["start_date"], cond["end_date"], cond["slug"], channel=channel)
             if overview["unique_visitors"] == 0:
                 st.warning(
-                    f"**{cond['title']}** — 이 기간 동안 `{cond['slug']}` 상세페이지 방문 기록이 없습니다. "
-                    "url_slug 철자나 기간을 확인해주세요."
+                    f"**{cond['title']}** — 이 기간 동안 `{cond['slug']}` 상세페이지 방문 기록이 없습니다"
+                    + (f" (유입경로: {channel})." if channel else ".")
+                    + " url_slug/기간/유입경로를 확인해주세요."
                 )
                 return None
-            scroll_df = queries.get_scroll_funnel(cond["start_date"], cond["end_date"], cond["slug"])
+            scroll_df = queries.get_scroll_funnel(cond["start_date"], cond["end_date"], cond["slug"], channel=channel)
             click_df = queries.get_click_activity(cond["start_date"], cond["end_date"], cond["slug"],
-                                                    excluded=excluded, limit=top_n)
-            totals = queries.get_click_totals(cond["start_date"], cond["end_date"], cond["slug"], excluded=excluded)
+                                                    excluded=excluded, limit=top_n, channel=channel)
+            totals = queries.get_click_totals(cond["start_date"], cond["end_date"], cond["slug"],
+                                               excluded=excluded, channel=channel)
     except Exception as e:
         st.error(f"**{cond['title']}** 조회 중 오류가 발생했습니다.")
         st.exception(e)
@@ -105,17 +108,44 @@ def _run_query_set(cond, top_n=10):
     return {"overview": overview, "scroll_df": scroll_df, "click_df": click_df, "totals": totals}
 
 
-def _render_full(cond, result, top_n=10, key="single"):
+def _channel_picker(cond, key_prefix):
+    """'유입경로 목록 불러오기'를 누르면 그때만 utm_source 목록을 조회해 선택창을 보여준다
+    (누르기 전엔 추가 쿼리를 안 날려서 평소엔 비용이 안 든다). 선택값(None=전체)을 반환."""
+    state_key = f"channels_{key_prefix}_{cond['slug']}"
+    if st.button("유입경로 목록 불러오기 (선택)", key=f"{key_prefix}_load_channels"):
+        with st.spinner("유입경로 조회 중..."):
+            st.session_state[state_key] = queries.get_traffic_channels(
+                cond["start_date"], cond["end_date"], cond["slug"]
+            )
+
+    ch_df = st.session_state.get(state_key)
+    if ch_df is None or ch_df.empty:
+        return None
+
+    label_map = {"__ALL__": f"전체 ({int(ch_df['users'].sum()):,}명)"}
+    for _, r in ch_df.iterrows():
+        label_map[r["utm_source"]] = f"{r['utm_source']} ({int(r['users']):,}명)"
+    options = ["__ALL__"] + ch_df["utm_source"].tolist()
+    sel = st.selectbox("유입경로", options, format_func=lambda x: label_map.get(x, x), key=f"{key_prefix}_channel_sel")
+    return None if sel == "__ALL__" else sel
+
+
+def _render_full(cond, result, top_n=10, key="single", channel=None):
     st.markdown(f"### {cond['title']}")
-    st.caption(f"url_slug: `{cond['slug']}` · 기간: {cond['start_date']} ~ {cond['end_date']}")
+    caption = f"url_slug: `{cond['slug']}` · 기간: {cond['start_date']} ~ {cond['end_date']}"
+    if channel:
+        caption += f" · 유입경로: **{channel}**"
+    st.caption(caption)
     viz.render_overview(result["overview"])
-    st.divider()
-    viz.render_scroll_funnel(result["scroll_df"], key=key)
-    viz.render_scroll_heatmap_overlay(
-        cond.get("screenshot_path"), cond.get("screenshot_height_px"), result["scroll_df"]
-    )
-    st.divider()
-    viz.render_click_ranking(result["click_df"], result["totals"], top_n=top_n, key=key)
+
+    tab_scroll, tab_click = st.tabs(["📜 스크롤", "👆 클릭"])
+    with tab_scroll:
+        viz.render_scroll_funnel(result["scroll_df"], key=key)
+        viz.render_scroll_heatmap_overlay(
+            cond.get("screenshot_path"), cond.get("screenshot_height_px"), result["scroll_df"]
+        )
+    with tab_click:
+        viz.render_click_ranking(result["click_df"], result["totals"], top_n=top_n, key=key)
 
 
 # ────────────────────────────────────────────────────────────
@@ -137,10 +167,11 @@ if page == "데이터 조회":
             "클릭 랭킹 — 몇 개까지 볼까요?", [10, 20, 30, 50], index=1,
             help="차트는 가독성을 위해 상위 20개까지만 보여지고, 표는 여기서 고른 개수만큼 전부 보여줍니다.",
         )
+        channel = _channel_picker(cond, "single")
         if st.button("조회하기", type="primary"):
-            result = _run_query_set(cond, top_n=top_n)
+            result = _run_query_set(cond, top_n=top_n, channel=channel)
             if result:
-                _render_full(cond, result, top_n=top_n)
+                _render_full(cond, result, top_n=top_n, channel=channel)
 
     else:
         st.caption("예: 이전 기수를 A, 현재 진행 중인 기수를 B로 놓고 비교해보세요.")

@@ -30,27 +30,79 @@ def _page_match_sql(path_expr: str) -> str:
     )"""
 
 
-def get_overview(start_date, end_date, url_slug) -> dict:
-    """총 page_view 수 / 순방문자 수(UU)"""
+def _first_touch_cte(pv_path_expr: str) -> str:
+    """
+    유입경로(유입채널) 필터용 — 유저별 '이 페이지에서의 첫 page_view' 시점 utm_source를 구하는 CTE.
+    page_location(쿼리스트링 포함 전체 URL)에서 utm_source를 정규식으로 뽑고, 없으면 '(direct)'로 묶는다.
+    뷰저블의 '유입경로' 드롭다운과 같은 역할 — 다만 세션 단위가 아니라 (기간 내) 유저의 first-touch 기준.
+    """
+    return f"""
+        first_touch AS (
+            SELECT
+                user_pseudo_id,
+                COALESCE(
+                    REGEXP_EXTRACT(
+                        ARRAY_AGG(ep.value.string_value ORDER BY event_timestamp ASC LIMIT 1)[OFFSET(0)],
+                        r'[?&]utm_source=([^&]+)'
+                    ),
+                    '(direct)'
+                ) AS utm_source
+            FROM {cfg.EVENTS_TABLE}, UNNEST(event_params) AS ep
+            WHERE _TABLE_SUFFIX BETWEEN @start_suffix AND @end_suffix
+              AND event_name = 'page_view'
+              AND ep.key = 'page_location'
+              AND {_page_match_sql(pv_path_expr)}
+            GROUP BY user_pseudo_id
+        )
+    """
+
+
+def get_traffic_channels(start_date, end_date, url_slug):
+    """이 페이지의 유입경로(utm_source, first-touch 기준)별 유저수 — 필터 드롭다운 채우는 용도"""
     client = get_client()
-    path_expr = "SPLIT(ep.value.string_value, '?')[OFFSET(0)]"
+    pv_path_expr = "SPLIT(ep.value.string_value, '?')[OFFSET(0)]"
     query = f"""
-        SELECT
-          COUNT(*) AS page_view_count,
-          COUNT(DISTINCT user_pseudo_id) AS unique_visitors
-        FROM {cfg.EVENTS_TABLE}, UNNEST(event_params) AS ep
-        WHERE _TABLE_SUFFIX BETWEEN @start_suffix AND @end_suffix
-          AND event_name = 'page_view'
-          AND ep.key = 'page_location'
-          AND {_page_match_sql(path_expr)}
+        WITH {_first_touch_cte(pv_path_expr)}
+        SELECT utm_source, COUNT(*) AS users
+        FROM first_touch
+        GROUP BY utm_source
+        ORDER BY users DESC
     """
     job_config = bigquery.QueryJobConfig(query_parameters=_date_params(start_date, end_date, url_slug))
+    return client.query(query, job_config=job_config).to_dataframe()
+
+
+def get_overview(start_date, end_date, url_slug, channel: str = None) -> dict:
+    """총 page_view 수 / 순방문자 수(UU). channel 지정 시 그 유입경로(first-touch) 유저로 한정."""
+    client = get_client()
+    path_expr = "SPLIT(ep.value.string_value, '?')[OFFSET(0)]"
+    params = _date_params(start_date, end_date, url_slug)
+    with_extra, channel_filter = "", ""
+    if channel:
+        with_extra = _first_touch_cte(path_expr) + ","
+        channel_filter = "AND user_pseudo_id IN (SELECT user_pseudo_id FROM first_touch WHERE utm_source = @channel)"
+        params.append(bigquery.ScalarQueryParameter("channel", "STRING", channel))
+    query = f"""
+        WITH {with_extra}
+        base AS (
+            SELECT user_pseudo_id
+            FROM {cfg.EVENTS_TABLE}, UNNEST(event_params) AS ep
+            WHERE _TABLE_SUFFIX BETWEEN @start_suffix AND @end_suffix
+              AND event_name = 'page_view'
+              AND ep.key = 'page_location'
+              AND {_page_match_sql(path_expr)}
+              {channel_filter}
+        )
+        SELECT COUNT(*) AS page_view_count, COUNT(DISTINCT user_pseudo_id) AS unique_visitors
+        FROM base
+    """
+    job_config = bigquery.QueryJobConfig(query_parameters=params)
     df = client.query(query, job_config=job_config).to_dataframe()
     row = df.iloc[0]
     return {"page_view_count": int(row["page_view_count"]), "unique_visitors": int(row["unique_visitors"])}
 
 
-def get_scroll_funnel(start_date, end_date, url_slug):
+def get_scroll_funnel(start_date, end_date, url_slug, channel: str = None):
     """
     스크롤 도달률 퍼널 (20/50/70/90% 등 구간별 누적 도달자 수 + 비율)
 
@@ -58,19 +110,28 @@ def get_scroll_funnel(start_date, end_date, url_slug):
       1) page_visitors에도 지원페이지 제외 필터 추가 (원본은 base_scroll에만 있고 여기 누락되어 있었음)
       2) scroll_percent(커스텀, 20/50/70/90) 뿐 아니라 percent_scrolled(GA4 자동수집, 90 고정)도
          COALESCE로 함께 봐야 90% 도달 유저 누락이 없음 (실데이터 확인: 두 키는 서로 배타적으로 찍힘)
+
+    channel: 지정 시 그 유입경로(first-touch utm_source)로 방문한 유저만으로 한정 (get_traffic_channels 참고)
     """
     client = get_client()
     pv_path_expr = "SPLIT(ep.value.string_value, '?')[OFFSET(0)]"
     sr_path_expr = "SPLIT((SELECT ep2.value.string_value FROM UNNEST(event_params) ep2 WHERE ep2.key='page_location'), '?')[OFFSET(0)]"
 
+    with_extra, channel_filter = "", ""
+    if channel:
+        with_extra = _first_touch_cte(pv_path_expr) + ","
+        channel_filter = "AND user_pseudo_id IN (SELECT user_pseudo_id FROM first_touch WHERE utm_source = @channel)"
+
     query = f"""
-        WITH page_visitors AS (
+        WITH {with_extra}
+        page_visitors AS (
             SELECT DISTINCT user_pseudo_id
             FROM {cfg.EVENTS_TABLE}, UNNEST(event_params) AS ep
             WHERE _TABLE_SUFFIX BETWEEN @start_suffix AND @end_suffix
               AND event_name = 'page_view'
               AND ep.key = 'page_location'
               AND {_page_match_sql(pv_path_expr)}
+              {channel_filter}
         )
 
         , scroll_raw AS (
@@ -146,7 +207,10 @@ def get_scroll_funnel(start_date, end_date, url_slug):
         WHERE scroll_percent IS NULL
           AND user_pseudo_id NOT IN (SELECT DISTINCT user_pseudo_id FROM base_scroll)
     """
-    job_config = bigquery.QueryJobConfig(query_parameters=_date_params(start_date, end_date, url_slug))
+    params = _date_params(start_date, end_date, url_slug)
+    if channel:
+        params.append(bigquery.ScalarQueryParameter("channel", "STRING", channel))
+    job_config = bigquery.QueryJobConfig(query_parameters=params)
     return client.query(query, job_config=job_config).to_dataframe()
 
 
@@ -159,7 +223,7 @@ def get_scroll_funnel(start_date, end_date, url_slug):
 CLICK_EVENT_CUTOVER = "20260916"
 
 
-def _clicks_cte(path_expr: str, excluded: list) -> str:
+def _clicks_cte(path_expr: str, excluded: list, channel: str = None) -> str:
     """
     click_activity(구) / click_activity_modulor(신) 원시 클릭을 TRIM + 중복제거해서 뽑는 공통 CTE.
 
@@ -171,9 +235,16 @@ def _clicks_cte(path_expr: str, excluded: list) -> str:
       뷰저블 tap 수 대비 2배 가까이 부풀려져 있던 원인). event_timestamp까지 같은 행은 1건으로만 센다.
     - TRIM: '지원하기' vs '지원하기\\n' 처럼 줄바꿈만 다른 값이 별개로 집계되던 문제 정리
     - excluded: GNB/헤더/푸터 등 페이지 콘텐츠가 아닌 사이트 공통 클릭 텍스트 제외 (설정 관리에서 편집 가능)
+    - channel: 지정 시 그 유입경로(first-touch utm_source)로 방문한 유저의 클릭만 포함
     """
     exclude_clause = "AND TRIM(user_click_raw) NOT IN UNNEST(@excluded)" if excluded else ""
+    channel_with, channel_filter = "", ""
+    if channel:
+        pv_path_expr = "SPLIT(ep.value.string_value, '?')[OFFSET(0)]"
+        channel_with = _first_touch_cte(pv_path_expr) + ","
+        channel_filter = "AND user_pseudo_id IN (SELECT user_pseudo_id FROM first_touch WHERE utm_source = @channel)"
     return f"""
+        {channel_with}
         clicks AS (
             SELECT DISTINCT
                 user_pseudo_id,
@@ -189,6 +260,7 @@ def _clicks_cte(path_expr: str, excluded: list) -> str:
                 OR (event_name = 'click_activity_modulor' AND _TABLE_SUFFIX >= '{CLICK_EVENT_CUTOVER}')
               )
               AND {_page_match_sql(path_expr)}
+              {channel_filter}
         ), clicks_filtered AS (
             SELECT user_pseudo_id, user_click_raw AS user_click
             FROM clicks
@@ -198,17 +270,18 @@ def _clicks_cte(path_expr: str, excluded: list) -> str:
     """
 
 
-def get_click_activity(start_date, end_date, url_slug, excluded=None, limit=30):
+def get_click_activity(start_date, end_date, url_slug, excluded=None, limit=30, channel: str = None):
     """
     click_activity 이벤트의 user_click(클릭된 요소 텍스트) 별 클릭수/클릭유저수
     - 뷰저블 클릭 히트맵의 임시 대체 데이터
     - excluded: GNB/헤더/푸터 같은 사이트 공통 클릭 텍스트 목록 (bq.get_click_exclusions())
+    - channel: 지정 시 그 유입경로(first-touch utm_source) 유저의 클릭만 집계
     """
     client = get_client()
     excluded = excluded or []
     path_expr = "SPLIT((SELECT ep2.value.string_value FROM UNNEST(event_params) ep2 WHERE ep2.key='page_location'), '?')[OFFSET(0)]"
     query = f"""
-        WITH {_clicks_cte(path_expr, excluded)}
+        WITH {_clicks_cte(path_expr, excluded, channel)}
         SELECT
             user_click,
             COUNT(*) AS clicks,
@@ -221,21 +294,25 @@ def get_click_activity(start_date, end_date, url_slug, excluded=None, limit=30):
     params = _date_params(start_date, end_date, url_slug)
     if excluded:
         params.append(bigquery.ArrayQueryParameter("excluded", "STRING", excluded))
+    if channel:
+        params.append(bigquery.ScalarQueryParameter("channel", "STRING", channel))
     job_config = bigquery.QueryJobConfig(query_parameters=params)
     return client.query(query, job_config=job_config).to_dataframe()
 
 
-def get_click_totals(start_date, end_date, url_slug, excluded=None) -> dict:
+def get_click_totals(start_date, end_date, url_slug, excluded=None, channel: str = None) -> dict:
     """click_activity 총 클릭수 / 총 클릭유저수 (랭킹 카드의 '전체 클릭 비중 %' 계산용, excluded 제외 후 기준)"""
     client = get_client()
     excluded = excluded or []
     path_expr = "SPLIT((SELECT ep2.value.string_value FROM UNNEST(event_params) ep2 WHERE ep2.key='page_location'), '?')[OFFSET(0)]"
     query = f"""
-        WITH {_clicks_cte(path_expr, excluded)}
+        WITH {_clicks_cte(path_expr, excluded, channel)}
         SELECT COUNT(*) AS total_clicks, COUNT(DISTINCT user_pseudo_id) AS total_clickers
         FROM clicks_filtered
     """
     params = _date_params(start_date, end_date, url_slug)
+    if channel:
+        params.append(bigquery.ScalarQueryParameter("channel", "STRING", channel))
     if excluded:
         params.append(bigquery.ArrayQueryParameter("excluded", "STRING", excluded))
     job_config = bigquery.QueryJobConfig(query_parameters=params)

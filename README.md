@@ -4,9 +4,9 @@
 클릭수 / 스크롤 도달률을 임시로 확인하기 위한 Streamlit 앱.
 
 ## 플로우
-1. **설정 관리 (관리자)** 화면에서 부트캠프명 / 기수 / 상세페이지 URL slug / 조회 기간을 등록
-2. **데이터 조회** 화면에서 등록된 목록 중 확인하고 싶은 항목을 선택
-3. 자동으로 GA4 BigQuery를 조회해 개요 지표 / 스크롤 퍼널 / 클릭 분석을 시각화
+1. **설정 관리 (관리자)** 화면에서 부트캠프명 / 기수 / 상세페이지 URL slug / 조회 기간을 등록 (ADMIN_PASSWORD로 보호됨)
+2. **데이터 조회** 화면에서 등록된 목록 중 확인하고 싶은 항목을 선택 — 필요하면 유입경로(utm_source)로도 좁힐 수 있음
+3. 자동으로 GA4 BigQuery를 조회해 개요 지표를 보여주고, "📜 스크롤" / "👆 클릭" 탭으로 나눠서 시각화 (뷰저블의 Tap/Scroll 탭 UX 참고)
 
 ## 실행 방법
 ```bash
@@ -43,8 +43,12 @@ cd /Users/hwangsungjin/Desktop/growthmarketing/scripts/detail_page_dashboard
   - **모듈로(Shadow DOM) 페이지 클릭 유실 및 개선 (2026-09-10~29)**: AWS클라우드 과정(`kdt-cld-9th`, 사내 자체 제작 도구 "모듈로"로 만든 페이지)에서 클릭 텍스트가 87.9%까지 비어있는 심각한 유실을 GTM Tag Assistant로 확인함 — 원인은 모듈로가 각 블록을 Shadow DOM으로 렌더링해서, 클릭이 shadow tree 안에서 발생하면 브라우저가 이벤트를 shadow host로 retargeting하여 GTM의 기존 Auto-event 리스너(`event.target` 기반)가 실제 클릭 요소를 못 읽기 때문. 개발팀이 2026-09-16 `click_activity_modulor` 이벤트(+`click event` 파라미터, `window.__lpxClickEl` 전역변수로 컴포넌트가 직접 실제 클릭 요소를 알려주는 방식)를 새로 게시해서 빈값 비율이 35.5%까지 개선됨 (완전 해결은 아님).
     - 이 신규 이벤트는 모듈로 페이지뿐 아니라 전체 페이지에 공통으로 붙어서, 기존 `click_activity`와 같은 클릭에서 병행 발생 중 (같은 트리거를 공유). 실측 결과 신규 이벤트가 모든 페이지에서 기존과 같거나 더 나음 (예: `kdt-growth-6th` 16.0%→12.2%).
     - 그래서 `queries.CLICK_EVENT_CUTOVER`("20260916") 기준으로 그 이전은 `click_activity`/`user_click`, 이후는 `click_activity_modulor`/`click event`만 배타적으로 사용 — 단순 합산은 중복 집계(같은 클릭이 2번 잡힘)를 유발하므로 반드시 날짜로 나눠야 함.
+- **유입경로(utm_source) 필터**: 뷰저블의 "유입경로: 전체" 드롭다운과 같은 역할. `queries._first_touch_cte`가 유저별로 "이 페이지에서의 첫 page_view" 시점 `page_location`에서 `utm_source`를 정규식으로 뽑아 채널을 정하고(없으면 `(direct)`), 개요/스크롤/클릭 쿼리 모두 이 채널로 유저를 한정할 수 있게 `channel` 파라미터를 받는다.
+  - **주의**: 이건 "이 조회 기간 안에서의 첫 방문" 기준이지, 어드민 파이프라인(`admin_attribution.py`)이 쓰는 "지원시작 시점 first-touch"와는 다른 정의다 — 같은 유저라도 두 기준의 채널이 다르게 나올 수 있음. 서로 다른 목적의 지표라 혼동하지 않도록 주의.
+  - 실측 검증(2026-09-01~29, kdt-cld-9th): 채널별 unique_visitors 합이 "전체" 조회 결과와 합리적으로 일치함을 확인함.
 
 ## 남아있는 결정/미구현 사항
 - **호스팅**: Streamlit Community Cloud에 배포 완료 (`https://github.com/SungJinHwang-manager/detail-page-dashboard`, Public 레포 + 앱 자체 비밀번호 게이트).
-- **접근 제어**: 관리자/조회자 구분이 화면상 메뉴 분리로만 되어 있고, 배포 앱 자체는 공유 비밀번호 1개로만 보호됨.
+- **접근 제어**: `APP_PASSWORD`(팀 공용, 데이터 조회용) + `ADMIN_PASSWORD`(설정 관리 전용, 관리자 본인만) 이중 비밀번호 게이트.
+- **유입경로 필터는 '단일 조회' 모드에만 있음**: '두 조건 비교' 모드에는 아직 안 붙임 (필요해지면 추가).
 - **비용/캐싱**: 설정 목록은 60초 캐싱하지만, 조회 쿼리 자체는 매번 새로 실행됨. 조회가 잦아지면 캐싱 또는 사전 집계 테이블화 검토.
