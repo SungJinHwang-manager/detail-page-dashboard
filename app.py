@@ -201,7 +201,10 @@ if page == "데이터 조회":
                 _render_full(cond, result, top_n=top_n, channel=channel)
 
     else:
-        st.caption("예: 이전 기수를 A, 현재 진행 중인 기수를 B로 놓고 비교해보세요.")
+        st.caption(
+            "예: 이전 기수를 A, 현재 진행 중인 기수를 B로 놓고 비교해보세요. "
+            "같은 과정을 고르고 '조건 직접 수정'에서 기간만 다르게 둬도 됩니다."
+        )
         col_a, col_b = st.columns(2)
         with col_a:
             st.markdown("#### 기준 A")
@@ -214,20 +217,26 @@ if page == "데이터 조회":
             result_a = _run_query_set(cond_a, top_n=5)
             result_b = _run_query_set(cond_b, top_n=5)
 
+            # 같은 과정을 기간만 다르게 비교하면 title(부트캠프명+기수)이 서로 같아져서
+            # 그래프 범례/그룹이 하나로 합쳐져 버리는 문제가 있었음 — 기간을 라벨에 항상 같이 붙여서
+            # A/B가 항상 서로 다른 값으로 구분되게 한다.
+            label_a = f"{cond_a['title']} ({cond_a['start_date']}~{cond_a['end_date']})"
+            label_b = f"{cond_b['title']} ({cond_b['start_date']}~{cond_b['end_date']})"
+
             col_a2, col_b2 = st.columns(2)
             if result_a:
-                col_a2.markdown(f"**{cond_a['title']}**")
+                col_a2.markdown(f"**{label_a}**")
                 col_a2.metric("순방문자 수", f"{result_a['overview']['unique_visitors']:,}")
                 col_a2.metric("총 page_view 수", f"{result_a['overview']['page_view_count']:,}")
             if result_b:
-                col_b2.markdown(f"**{cond_b['title']}**")
+                col_b2.markdown(f"**{label_b}**")
                 col_b2.metric("순방문자 수", f"{result_b['overview']['unique_visitors']:,}")
                 col_b2.metric("총 page_view 수", f"{result_b['overview']['page_view_count']:,}")
 
             if result_a and result_b:
                 st.divider()
                 viz.render_scroll_funnel_compare(
-                    result_a["scroll_df"], cond_a["title"], result_b["scroll_df"], cond_b["title"]
+                    result_a["scroll_df"], label_a, result_b["scroll_df"], label_b
                 )
 
             st.divider()
