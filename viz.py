@@ -234,9 +234,11 @@ def render_scroll_heatmap_overlay(screenshot_path: str, screenshot_height_px: in
     img.save(buf, format="PNG")
     b64 = base64.b64encode(buf.getvalue()).decode()
 
-    # 뷰저블 스타일(화면 폭 전체를 가로지르는 반투명 배너 + 읽기 쉬운 문장)로 표시.
+    # 뷰저블 스타일(화면 폭 전체를 가로지르는 배너 + 읽기 쉬운 문장)로 표시.
     # 예전엔 구간마다 좌상단에 작은 색깔 라벨만 달아놔서, 페이지가 길면 라벨이 좌측에 몰려
     # 알아보기 어렵다는 피드백이 있었음 — 그래서 각 구간 위치에 폭 전체 배너를 띄우는 방식으로 변경.
+    # 어두운 다크톤 배경이었더니 우리 상세페이지 자체가 어두운(블랙) 구간이 많아 배너가 묻혀 보였다는
+    # 피드백을 반영해, 페이지 배경이 밝든 어둡든 튀는 밝은 블루 + 흰 테두리 글로우로 변경.
     # ⚠️ "평균 체류시간" 같은 건 scroll 이벤트에 없는 데이터라 넣지 않음 — 도달 비율만 표시.
     lines_html = ""
     for i, (_, r) in enumerate(scroll_main.iterrows()):
@@ -244,12 +246,13 @@ def render_scroll_heatmap_overlay(screenshot_path: str, screenshot_height_px: in
         lines_html += f"""
         <div style="position:absolute; left:0; right:0; top:{pct}%; transform:translateY(-50%);
                      z-index:2; display:flex; justify-content:center; padding:0 16px; pointer-events:none;">
-          <div style="background:rgba(15,23,42,0.88); color:#fff; padding:12px 20px; border-radius:10px;
+          <div style="background:#2563eb; color:#fff; padding:12px 20px; border-radius:10px;
                        font-size:16px; font-weight:600; line-height:1.5; text-align:center;
-                       font-family:-apple-system,sans-serif; box-shadow:0 4px 14px rgba(0,0,0,.35);
+                       font-family:-apple-system,sans-serif; border:2px solid rgba(255,255,255,.85);
+                       box-shadow:0 0 0 1px rgba(37,99,235,.5), 0 6px 20px rgba(0,0,0,.45);
                        max-width:100%;">
             전체 사용자 중 <b>{r['ratio']}%</b>가 도달한 지점입니다
-            <span style="opacity:.7; font-weight:400;"> ({int(pct)}% 스크롤 · {int(r['cumulative_users']):,}명)</span>
+            <span style="opacity:.85; font-weight:400;"> ({int(pct)}% 스크롤 · {int(r['cumulative_users']):,}명)</span>
           </div>
         </div>"""
 
